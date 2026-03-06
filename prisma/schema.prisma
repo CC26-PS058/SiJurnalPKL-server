@@ -1,0 +1,412 @@
+// ============================================================
+// Prisma Schema - PKL E-Journal Platform (SiJurnalPKL)
+// Updated based on MVP gap analysis
+// Compatible with: Prisma 7.x + PostgreSQL
+// ============================================================
+
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+datasource db {
+  provider = "postgresql"
+}
+
+// ============================================================
+// ENUMS
+// ============================================================
+
+enum Role {
+  STUDENT
+  MENTOR
+  TEACHER
+  ADMIN
+}
+
+enum PklStatus {
+  ACTIVE
+  FINISHED
+  NOT_STARTED
+}
+
+enum PlacementStatus {
+  ACTIVE
+  FINISHED
+  NOT_STARTED
+}
+
+enum GpsStatus {
+  VALID
+  WARNING  // GPS gagal ≤3x, absen tetap tersimpan dengan flag
+  INVALID
+}
+
+// [UPDATED] Pisahkan work type dari attendance status (WFO/WFA bukan status kehadiran)
+enum WorkType {
+  WFO // Work From Office - validasi radius ketat
+  WFA // Work From Anywhere - validasi radius longgar/dinonaktifkan
+}
+
+// [UPDATED] Status kehadiran yang benar sesuai logika MVP
+enum AttendanceStatus {
+  PRESENT
+  LATE
+  ABSENT
+  LEAVE  // Izin yang sudah disetujui mentor
+  ALPHA  // Tidak masuk tanpa keterangan (bisa diubah mentor dari LEAVE)
+}
+
+enum AiStatus {
+  PENDING
+  SUCCESS
+  FAILED
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+// [NEW] Status untuk pengajuan izin siswa
+enum LeaveType {
+  SICK     // Sakit
+  PERSONAL // Keperluan pribadi
+}
+
+enum LeaveStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CONVERTED_TO_ALPHA // Diubah mentor karena dicurigai tidak valid
+}
+
+enum RecommendationStatus {
+  ELIGIBLE
+  NOT_ELIGIBLE
+  PENDING_EVALUATION
+  BLOCKED
+}
+
+// ============================================================
+// MODELS
+// ============================================================
+
+model User {
+  id             String          @id @unique @db.VarChar(17) @map("user_id")
+  name           String   @db.VarChar(255)
+  email          String   @unique @db.VarChar(255)
+  whatsappNumber String   @map("whatsapp_number") @db.VarChar(20)
+  passwordHash   String   @map("password_hash") @db.VarChar(255)
+  role           Role
+  activated      Boolean  @default(false)
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(0)
+
+  // Relations
+  student Student?
+  mentor  Mentor?
+  teacher Teacher?
+  admin   Admin? // [NEW]
+
+  // Indexes
+  @@index([role])
+  @@index([activated])
+  @@index([createdAt])
+
+  @@map("users")
+}
+
+model School {
+  id             String          @id @unique @db.VarChar(17) @map("school_id")
+  name    String @db.VarChar(255)
+  address String @db.Text
+
+  // Relations
+  students Student[]
+  teachers Teacher[]
+  admins   Admin[] // [NEW]
+
+  @@map("schools")
+}
+
+// [NEW] Model Admin yang sebelumnya tidak ada meski role ADMIN sudah didefinisikan
+model Admin {
+  id             String          @id @unique @db.VarChar(17) @map("admin_id")
+  userId   String @unique @map("user_id")
+  schoolId String @map("school_id")
+
+  // Relations
+  user   User   @relation(fields: [userId], references: [id])
+  school School @relation(fields: [schoolId], references: [id])
+
+  // Indexes
+  @@index([schoolId])
+
+  @@map("admins")
+}
+
+model Student {
+  id             String          @id @unique @db.VarChar(17) @map("student_id")
+  userId    String    @unique @map("user_id")
+  nis       BigInt    @unique
+  schoolId  String    @map("school_id")
+  statusPkl PklStatus @map("status_pkl")
+
+  // Relations
+  user            User              @relation(fields: [userId], references: [id])
+  school          School            @relation(fields: [schoolId], references: [id])
+  placements      Placement[]
+  attendanceLogs  AttendanceLog[]
+  leaveRequests   LeaveRequest[]    // [NEW]
+  finalAssessment FinalAssessment?
+
+  // Indexes
+  @@index([schoolId])
+  @@index([statusPkl])
+
+  @@map("students")
+}
+
+model Industry {
+  id             String          @id @unique @db.VarChar(17) @map("industry_id")
+  name        String  @db.VarChar(255)
+  address     String  @db.Text
+  latitude    Decimal @db.Decimal(10, 6)
+  longitude   Decimal @db.Decimal(10, 6)
+  radiusMeter Int     @map("radius_meter")
+
+  // Relations
+  mentors    Mentor[]
+  placements Placement[]
+
+  @@map("industries")
+}
+
+model Mentor {
+  id             String          @id @unique @db.VarChar(17) @map("mentor_id")
+  userId     String @unique @map("user_id")
+  industryId String @map("industry_id")
+
+  // Relations
+  user                User                 @relation(fields: [userId], references: [id])
+  industry            Industry             @relation(fields: [industryId], references: [id])
+  industryEvaluations IndustryEvaluation[]
+  approvedDailyLogs   DailyLog[]
+  reviewedLeaves      LeaveRequest[]       // [NEW]
+  auditLogs           AuditLog[]           // [NEW]
+
+  // Indexes
+  @@index([industryId])
+
+  @@map("mentors")
+}
+
+model Teacher {
+  id             String          @id @unique @db.VarChar(17) @map("teacher_id")
+  userId   String @unique @map("user_id")
+  schoolId String @map("school_id")
+
+  // Relations
+  user             User              @relation(fields: [userId], references: [id])
+  school           School            @relation(fields: [schoolId], references: [id])
+  finalAssessments FinalAssessment[]
+
+  // Indexes
+  @@index([schoolId])
+
+  @@map("teachers")
+}
+
+model Placement {
+  id             String          @id @unique @db.VarChar(17) @map("placement_id")
+  studentId  String          @map("student_id")
+  industryId String          @map("industry_id")
+  startDate  DateTime        @map("start_date") @db.Timestamptz(0)
+  endDate    DateTime        @map("end_date") @db.Timestamptz(0)
+  status     PlacementStatus
+
+  // Relations
+  student             Student              @relation(fields: [studentId], references: [id])
+  industry            Industry             @relation(fields: [industryId], references: [id])
+  attendanceLogs      AttendanceLog[]
+  leaveRequests       LeaveRequest[]       // [NEW]
+  industryEvaluations IndustryEvaluation[]
+
+  // Indexes
+  @@index([studentId])
+  @@index([industryId])
+  @@index([status])
+  @@index([startDate, endDate])
+
+  @@map("placements")
+}
+
+model AttendanceLog {
+  id                   String          @id @unique @db.VarChar(17) @map("attendance_id")
+  studentId            String           @map("student_id")
+  placementId          String           @map("placement_id")
+  workDate             DateTime         @map("work_date") @db.Date
+  workType             WorkType         @map("work_type")             // [NEW] WFO atau WFA, menentukan logika geofencing
+  checkInTime          DateTime         @map("check_in_time") @db.Timestamptz(0)
+  checkOutTime         DateTime?        @map("check_out_time") @db.Timestamptz(0)
+  latitude             Decimal?         @db.Decimal(10, 6)
+  longitude            Decimal?         @db.Decimal(10, 6)
+  distanceFromIndustry Float?           @map("distance_from_industry")
+  checkInPhotoUrl      String           @map("check_in_photo_url") @db.VarChar(255)  // [UPDATED] foto wajah saat check-in (kamera depan)
+  checkOutPhotoUrl     String?          @map("check_out_photo_url") @db.VarChar(255) // [NEW] foto kegiatan saat check-out (bebas)
+  gpsStatus            GpsStatus        @map("gps_status")
+  gpsAccuracy          Float?           @map("gps_accuracy")         // [NEW] akurasi GPS dalam meter untuk spoof detection
+  gpsAttemptCount      Int              @default(1) @map("gps_attempt_count") // [NEW] berapa kali retry sebelum WARNING
+  userAgent            String?          @map("user_agent") @db.Text  // [NEW] metadata browser untuk deteksi manipulasi
+  statusAttendance     AttendanceStatus @map("status_attendance")
+  createdAt            DateTime         @default(now()) @map("created_at") @db.Timestamptz(0)
+
+  // Relations
+  student   Student    @relation(fields: [studentId], references: [id])
+  placement Placement  @relation(fields: [placementId], references: [id])
+  dailyLog  DailyLog?
+  auditLogs AuditLog[] // [NEW]
+
+  // Unique: one attendance per placement per day
+  @@unique([placementId, workDate])
+
+  // Indexes
+  @@index([studentId])
+  @@index([workDate])
+  @@index([statusAttendance])
+  @@index([gpsStatus])
+  @@index([workType]) // [NEW]
+  @@index([createdAt])
+
+  @@map("attendance_logs")
+}
+
+model DailyLog {
+  id             String          @id @unique @db.VarChar(17) @map("daily_id")
+  attendanceId   String         @unique @map("attendance_id")
+  rawText        String         @map("raw_text") @db.Text
+  processedText  String?        @map("processed_text") @db.Text
+  skillTags      String[]       @map("skill_tags") // [NEW] hasil ekstraksi skill oleh AI Refiner
+  aiStatus       AiStatus       @default(PENDING) @map("ai_status")
+  approvalStatus ApprovalStatus @default(PENDING) @map("approval_status")
+  approvedBy     String?        @map("approved_by")
+  approvedAt     DateTime?      @map("approved_at") @db.Timestamptz(0)
+  createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz(0)
+
+  // Relations
+  attendance AttendanceLog @relation(fields: [attendanceId], references: [id])
+  mentor     Mentor?       @relation(fields: [approvedBy], references: [id])
+
+  // Indexes
+  @@index([aiStatus])
+  @@index([approvalStatus])
+  @@index([approvedBy])
+  @@index([createdAt])
+  @@index([approvalStatus, aiStatus])
+
+  @@map("daily_logs")
+}
+
+// [NEW] Tabel pengajuan izin siswa (sakit/keperluan)
+// Memisahkan logika izin dari AttendanceLog agar mentor bisa mengubah status APPROVED → ALPHA
+model LeaveRequest {
+  id             String          @id @unique @db.VarChar(17) @map("leave_id")
+  studentId   String      @map("student_id")
+  placementId String      @map("placement_id")
+  leaveDate   DateTime    @map("leave_date") @db.Date
+  type        LeaveType
+  reason      String      @db.Text
+  status      LeaveStatus @default(PENDING)
+  reviewedBy  String?     @map("reviewed_by") // mentor_id
+  reviewedAt  DateTime?   @map("reviewed_at") @db.Timestamptz(0)
+  createdAt   DateTime    @default(now()) @map("created_at") @db.Timestamptz(0)
+
+  // Relations
+  student   Student    @relation(fields: [studentId], references: [id])
+  placement Placement  @relation(fields: [placementId], references: [id])
+  mentor    Mentor?    @relation(fields: [reviewedBy], references: [id])
+  auditLogs AuditLog[] // [NEW] rekam jejak jika status diubah
+
+  // Unique: satu izin per siswa per tanggal per placement
+  @@unique([placementId, leaveDate])
+
+  // Indexes
+  @@index([studentId])
+  @@index([placementId])
+  @@index([status])
+  @@index([leaveDate])
+  @@index([reviewedBy])
+
+  @@map("leave_requests")
+}
+
+model IndustryEvaluation {
+  id                 String          @id @unique @db.VarChar(17) @map("evaluation_id")
+  mentorId           String   @map("mentor_id")
+  placementId        String   @map("placement_id")
+  disciplineScore    Int      @map("discipline_score") @db.SmallInt
+  technicalScore     Int      @map("technical_score") @db.SmallInt
+  communicationScore Int      @map("communication_score") @db.SmallInt
+  teamworkScore      Int      @map("teamwork_score") @db.SmallInt
+  notes              String   @db.Text
+  submittedAt        DateTime @map("submitted_at") @db.Timestamptz(0)
+
+  // Relations
+  mentor    Mentor    @relation(fields: [mentorId], references: [id])
+  placement Placement @relation(fields: [placementId], references: [id])
+
+  // [NEW] Satu mentor hanya bisa submit satu evaluasi per placement
+  @@unique([mentorId, placementId])
+
+  // Indexes
+  @@index([mentorId])
+  @@index([placementId])
+  @@index([submittedAt])
+
+  @@map("industry_evaluations")
+}
+
+model FinalAssessment {
+  id                   String          @id @unique @db.VarChar(17) @map("assessments_id")
+  teacherId            String               @map("teacher_id")
+  studentId            String               @unique @map("student_id")
+  finalScore           Int                  @map("final_score")
+  recommendationStatus RecommendationStatus @map("recommendation_status")
+  approvedAt           DateTime             @map("approved_at") @db.Timestamptz(0)
+
+  // Relations
+  teacher Teacher @relation(fields: [teacherId], references: [id])
+  student Student @relation(fields: [studentId], references: [id])
+
+  // Indexes
+  @@index([teacherId])
+  @@index([recommendationStatus])
+  @@index([approvedAt])
+
+  @@map("final_assessments")
+}
+
+// [NEW] Audit trail untuk setiap perubahan status yang sensitif
+// Contoh: mentor mengubah status izin → alpha, atau perubahan status kehadiran
+model AuditLog {
+  id             String          @id @unique @db.VarChar(17) @map("audit_id")
+  targetType   String   @map("target_type") @db.VarChar(50) // "attendance_log" | "leave_request"
+  targetId     String   @map("target_id")
+  changedBy    String   @map("changed_by")  // mentor_id yang melakukan perubahan
+  fromStatus   String   @map("from_status") @db.VarChar(50)
+  toStatus     String   @map("to_status") @db.VarChar(50)
+  reason       String?  @db.Text
+  changedAt    DateTime @default(now()) @map("changed_at") @db.Timestamptz(0)
+
+  // Relations (polymorphic via targetType + targetId, foreign key ke masing-masing tabel)
+  mentor        Mentor         @relation(fields: [changedBy], references: [id])
+  attendanceLog AttendanceLog? @relation(fields: [targetId], references: [id], map: "audit_attendance_fk")
+  leaveRequest  LeaveRequest?  @relation(fields: [targetId], references: [id], map: "audit_leave_fk")
+
+  // Indexes
+  @@index([targetType, targetId])
+  @@index([changedBy])
+  @@index([changedAt])
+
+  @@map("audit_logs")
+}
