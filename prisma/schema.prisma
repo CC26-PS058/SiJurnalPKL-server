@@ -88,6 +88,12 @@ enum RecommendationStatus {
   BLOCKED
 }
 
+// [NEW] Tipe jam kerja yang digunakan industry
+enum WorkHourType {
+  FIXED_SHIFT     // Jam masuk dan pulang tetap
+  MINIMUM_HOURS   // Jam kerja minimal dalam sehari
+}
+
 // ============================================================
 // MODELS
 // ============================================================
@@ -168,12 +174,16 @@ model Student {
 }
 
 model Industry {
-  id             String          @id @unique @db.VarChar(17) @map("industry_id")
-  name        String  @db.VarChar(255)
-  address     String  @db.Text
-  latitude    Decimal @db.Decimal(10, 6)
-  longitude   Decimal @db.Decimal(10, 6)
-  radiusMeter Int     @map("radius_meter")
+  id                String         @id @unique @db.VarChar(17) @map("industry_id")
+  name              String         @db.VarChar(255)
+  address           String         @db.Text
+  latitude          Decimal        @db.Decimal(10, 6)
+  longitude         Decimal        @db.Decimal(10, 6)
+  radiusMeter       Int            @map("radius_meter")
+  workHourType      WorkHourType   @map("work_hour_type")       // [NEW] Tipe jam kerja: FIXED_SHIFT atau MINIMUM_HOURS
+  minimumHours      Int?           @map("minimum_hours")         // [NEW] Jam kerja minimal per hari (jika workHourType = MINIMUM_HOURS)
+  fixedCheckInTime  String?        @map("fixed_check_in_time")   @db.VarChar(5)  // [NEW] Format HH:MM (jika workHourType = FIXED_SHIFT)
+  fixedCheckOutTime String?        @map("fixed_check_out_time")  @db.VarChar(5)  // [NEW] Format HH:MM (jika workHourType = FIXED_SHIFT)
 
   // Relations
   mentors    Mentor[]
