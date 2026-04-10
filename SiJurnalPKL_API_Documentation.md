@@ -247,6 +247,112 @@ Invalidates the current refresh token server-side.
 
 ---
 
+### `GET /profile`
+
+> ðŸ” **Auth:** `accessToken` â€” Role: `STUDENT`, `MENTOR`, `TEACHER`, `ADMIN`
+
+Returns the authenticated user's profile. The `profile` shape depends on role.
+
+**Response `200 OK` (Student example):**
+
+```json
+{
+  "success": true,
+  "data": {
+    "role": "STUDENT",
+    "profile": {
+      "name": "Dirga Hardeka Agustiantara",
+      "nisn": "0074648686",
+      "kelas": "12 RPL 2",
+      "company_name": "PT Neo One Global Inovasi",
+      "status_pkl": "ACTIVE",
+      "masa_prakerin": "2025-03-10 to 2026-03-10",
+      "pembimbing_sekolah": "Tika Tiki S.Kanjud",
+      "mentor_industri": "Joshua Sigaler",
+      "whatsapp_number": "+6287884971079",
+      "email": "dirgahardekaagustiantara@gmail.com"
+    }
+  },
+  "message": "Profile fetched."
+}
+```
+
+---
+
+### `PATCH /profile`
+
+> ðŸ” **Auth:** `accessToken` â€” Role: `MENTOR`, `TEACHER`, `ADMIN`  
+> **Note:** Student profile is read-only except contact fields (email/WhatsApp).
+
+Updates editable profile fields. Only fields allowed for the user's role will be applied.
+
+**Request Body (partial):**
+
+```typescript
+interface UpdateProfileRequest {
+  name?: string;
+  email?: string;
+  whatsapp_number?: string;
+  phone?: string; // Mentor only
+  position?: string; // Mentor only
+  company_name?: string; // Mentor only
+  department?: string; // Mentor only
+  office_location?: string; // Mentor only
+  address?: string; // Mentor only
+  school_name?: string; // Teacher only
+  nip?: string; // Teacher only
+}
+```
+
+**Response `200 OK`:**
+
+```json
+{
+  "success": true,
+  "data": { "updated": true },
+  "message": "Profile updated."
+}
+```
+
+---
+
+### `GET /contacts`
+
+> ðŸ” **Auth:** `accessToken` â€” Role: `STUDENT`
+
+Returns contact information for Pembimbing Sekolah, Mentor Industri, and Teknisi (support).
+
+**Response `200 OK`:**
+
+```json
+{
+  "success": true,
+  "data": {
+    "pembimbing_sekolah": {
+      "name": "Ir. Prof. Hj. Dirga Hardeka",
+      "nip": "123567890098765432",
+      "whatsapp_number": "6281234567890",
+      "avatar_url": "https://cdn.sijurnalpkl.id/avatars/pembimbing.png"
+    },
+    "mentor_industri": {
+      "name": "Drs. Bambang Wijayanto, M.T.",
+      "nip": null,
+      "whatsapp_number": "6289876543210",
+      "avatar_url": "https://cdn.sijurnalpkl.id/avatars/mentor.png"
+    },
+    "teknisi": {
+      "name": "Budi Santoso, S.T.",
+      "nip": "199203082018021004",
+      "whatsapp_number": "6289876543210",
+      "avatar_url": "https://cdn.sijurnalpkl.id/avatars/teknisi.png"
+    }
+  },
+  "message": "Contacts fetched."
+}
+```
+
+---
+
 ## 3. Attendance & Geolocation
 
 > 🔐 **Auth:** `accessToken` — Role: `STUDENT`
@@ -305,7 +411,8 @@ function haversineDistance(
 
 ### `POST /attendance/check-in`
 
-Records student arrival. Photo must be captured live from the device camera (gallery access is blocked client-side).
+Records student arrival. Photo must be captured live from the device camera (gallery access is blocked client-side).  
+**Check-in now also includes a short activity input** which, together with the check-in photo, is sent to n8n for AI refinement.
 
 **Request:** `multipart/form-data`
 
@@ -317,6 +424,7 @@ interface CheckInRequest {
   longitude: number; // e.g. 107.609810
   gps_accuracy: number; // Accuracy in meters from Geolocation API
   gps_attempt_count: number; // How many retries before this submission
+  activity_input: string; // Daily activity input (min 30 chars) — sent to AI Refiner
   check_in_photo: File; // JPEG/PNG, max 5MB — live camera capture only
   user_agent: string; // Populated server-side from req.headers
 }
@@ -332,7 +440,10 @@ interface CheckInRequest {
    - If `work_hour_type = FIXED_SHIFT`: Check `check_in_time` against `Industry.fixed_check_in_time`. Set `LATE` if after threshold, `PRESENT` if on time.
    - If `work_hour_type = MINIMUM_HOURS`: Set `PRESENT` by default (no fixed check-in time requirement).
 6. Upload `check_in_photo` to object storage. Store URL.
-7. Insert `AttendanceLog` record.
+7. Insert `AttendanceLog` record. Set `check_in_review_status = PENDING` when `gps_status = WARNING`, otherwise `APPROVED`.
+8. **Insert** `DailyLog` record with `raw_text = activity_input`, `ai_status = PENDING`, `approval_status = PENDING`.
+9. **Asynchronously** dispatch webhook to n8n (do not await). See [Section 4.1](#41-outgoing-webhook-to-n8n).
+10. Return `201` immediately — do not block on AI processing.
 
 **Response `201 Created`:**
 
@@ -341,6 +452,7 @@ interface CheckInRequest {
   "success": true,
   "data": {
     "attendance_id": "ATT_9mK3nBpXcR5Tz",
+    "daily_id": "DLY_5hJ2mKpNrT8Wq",
     "work_date": "2026-03-07",
     "work_type": "WFO",
     "check_in_time": "2026-03-07T08:02:00+07:00",
@@ -349,7 +461,10 @@ interface CheckInRequest {
     "gps_accuracy": 12.5,
     "gps_attempt_count": 1,
     "status_attendance": "PRESENT",
-    "check_in_photo_url": "https://cdn.sijurnalpkl.id/photos/ATT_9mK3nBpXcR5Tz_in.jpg"
+    "check_in_review_status": "APPROVED",
+    "check_in_photo_url": "https://cdn.sijurnalpkl.id/photos/ATT_9mK3nBpXcR5Tz_in.jpg",
+    "ai_status": "PENDING",
+    "approval_status": "PENDING"
   },
   "message": "Check-in recorded successfully."
 }
@@ -365,7 +480,8 @@ interface CheckInRequest {
     "gps_status": "WARNING",
     "gps_attempt_count": 3,
     "flagged": true,
-    "flag_reason": "GPS_RETRY_LIMIT_REACHED — Pending manual mentor review."
+    "flag_reason": "GPS_RETRY_LIMIT_REACHED — Pending manual mentor review.",
+    "check_in_review_status": "PENDING"
   },
   "message": "Check-in recorded with GPS warning. Mentor has been notified for manual review."
 }
@@ -380,12 +496,13 @@ interface CheckInRequest {
 | `400`  | `PLACEMENT_INACTIVE` | Placement status is not `ACTIVE`            |
 | `403`  | `FORBIDDEN`          | Non-student role attempting check-in        |
 | `422`  | `OUTSIDE_RADIUS`     | WFO distance exceeds `Industry.radiusMeter` |
+| `400`  | `ACTIVITY_TOO_SHORT` | `activity_input` under 30 characters        |
 
 ---
 
 ### `POST /attendance/check-out`
 
-Records student departure and daily activity report. Triggers the asynchronous AI Refiner pipeline.
+Records student departure and check-out photo. **AI refinement already runs at check-in**, so check-out does not dispatch to n8n.
 
 **Request:** `multipart/form-data`
 
@@ -393,7 +510,6 @@ Records student departure and daily activity report. Triggers the asynchronous A
 interface CheckOutRequest {
   attendance_id: string; // From today's check-in
   check_out_photo: File; // JPEG/PNG — activity photo, front or back camera
-  raw_text: string; // Daily activity description (min 30 chars)
 }
 ```
 
@@ -402,9 +518,8 @@ interface CheckOutRequest {
 1. Verify `attendance_id` belongs to the authenticated student and `check_out_time` is `null`.
 2. Upload `check_out_photo`. Store URL.
 3. Update `AttendanceLog`: set `check_out_time = now()`.
-4. **Insert** `DailyLog` record with `raw_text`, `ai_status = PENDING`, `approval_status = PENDING`.
-5. **Asynchronously** dispatch webhook to n8n (do not await). See [Section 4.1](#41-outgoing-webhook-to-n8n).
-6. Return `200` immediately — do not block on AI processing.
+4. Set `check_out_review_status = APPROVED` (or `PENDING` if manual review is required by policy).
+5. Return `200` immediately.
 
 **Response `200 OK`:**
 
@@ -412,14 +527,12 @@ interface CheckOutRequest {
 {
   "success": true,
   "data": {
-    "daily_id": "DLY_5hJ2mKpNrT8Wq",
     "attendance_id": "ATT_9mK3nBpXcR5Tz",
     "check_out_time": "2026-03-07T17:05:00+07:00",
-    "ai_status": "PENDING",
-    "raw_text_saved": true,
-    "message_detail": "Daily log saved. AI refinement is processing in the background."
+    "check_out_review_status": "APPROVED",
+    "message_detail": "Check-out recorded."
   },
-  "message": "Check-out recorded. Daily log submitted for AI processing."
+  "message": "Check-out recorded."
 }
 ```
 
@@ -429,7 +542,57 @@ interface CheckOutRequest {
 | ------ | --------------------- | --------------------------------- |
 | `400`  | `ALREADY_CHECKED_OUT` | `check_out_time` already exists   |
 | `400`  | `NO_CHECKIN_TODAY`    | No matching check-in record found |
-| `400`  | `RAW_TEXT_TOO_SHORT`  | `raw_text` is under 30 characters |
+| `400`  | `PHOTO_REQUIRED`      | `check_out_photo` is missing      |
+
+---
+
+### `GET /attendance/summary`
+
+> ðŸ” **Auth:** `accessToken` â€” Role: `STUDENT`, `MENTOR`, `TEACHER`
+
+Returns **automatic attendance/absence summary** used for penilaian ketidakhadiran.  
+Counts are computed by the system (from `AttendanceLog` + approved `LeaveRequest`) and are **read-only**.
+
+**Query Parameters:**
+
+| Param        | Type     | Required | Description                                               |
+| ------------ | -------- | -------- | --------------------------------------------------------- |
+| `student_id` | `string` | No\*     | Required for MENTOR/TEACHER; defaults to self for STUDENT |
+| `placement_id` | `string` | No     | Filter by specific placement period                       |
+| `from`       | `string` | No       | ISO 8601 date — start of range                            |
+| `to`         | `string` | No       | ISO 8601 date — end of range                              |
+
+**Response `200 OK`:**
+
+```json
+{
+  "success": true,
+  "data": {
+    "present": 18,
+    "late": 2,
+    "leave": 1,
+    "sick": 2,
+    "alpha": 0,
+    "total_days": 21,
+    "ketidakhadiran": {
+      "sakit": 2,
+      "ijin": 1,
+      "tanpa_keterangan": 0
+    }
+  },
+  "message": "Attendance summary fetched."
+}
+```
+
+---
+
+### Presensi → Mentor Review Flow
+
+1. **Student check-in** submits `activity_input` + `check_in_photo` → `DailyLog` created → n8n AI refine runs.
+2. **System sets review status** for check-in/check-out (`APPROVED` by default; `PENDING` when flagged).
+3. **Attendance status (Hadir/Izin/Sakit/Alpha) is automatic** based on attendance + approved leave. Mentors do not set it manually.
+4. **Mentor reviews unit kegiatan** via `/mentor/daily-logs` and approves/rejects using `/mentor/approve-batch`.
+5. **If rejected**, student can submit an appeal via `/student/daily-logs/:daily_id/appeal`, which resets the log to `PENDING`.
 
 ---
 
@@ -437,7 +600,7 @@ interface CheckOutRequest {
 
 ### 4.1 Outgoing Webhook to n8n
 
-After a successful check-out, the Express backend fires a `POST` to the configured n8n webhook URL. This call is **fire-and-forget** — the backend does not await the response.
+After a successful **check-in**, the Express backend fires a `POST` to the configured n8n webhook URL. This call is **fire-and-forget** — the backend does not await the response.
 
 **Outgoing Payload (Express → n8n):**
 
@@ -447,7 +610,9 @@ interface N8nWebhookPayload {
   student_id: string;
   placement_id: string;
   work_date: string; // ISO 8601 date string
-  raw_text: string; // The student's original activity description
+  check_in_time: string; // ISO 8601 timestamp
+  activity_input: string; // The student's original activity input (from check-in)
+  check_in_photo_url: string; // Image URL captured on check-in
   callback_url: string; // e.g. "https://api.sijurnalpkl.id/v1/internal/ai-callback"
 }
 ```
@@ -460,7 +625,9 @@ interface N8nWebhookPayload {
   "student_id": "STU_7k3mN9pQx2Rv1",
   "placement_id": "PLC_1cA8jFqZmB3Ys",
   "work_date": "2026-03-07",
-  "raw_text": "hari ini gue bantu setup server baru terus debug error pas deploy ke staging",
+  "check_in_time": "2026-03-07T08:02:00+07:00",
+  "activity_input": "hari ini gue bantu setup server baru terus debug error pas deploy ke staging",
+  "check_in_photo_url": "https://cdn.sijurnalpkl.id/photos/ATT_9mK3nBpXcR5Tz_in.jpg",
   "callback_url": "https://api.sijurnalpkl.id/v1/internal/ai-callback"
 }
 ```
@@ -468,7 +635,7 @@ interface N8nWebhookPayload {
 **n8n Workflow Responsibilities:**
 
 1. Receive payload from Express.
-2. Inject `raw_text` into an OpenRouter prompt template (e.g., extract professional language + skill tags).
+2. Inject `activity_input` and `check_in_photo_url` into an OpenRouter prompt template (e.g., rewrite into formal journal + extract skill tags).
 3. Validate JSON output structure.
 4. `POST` results back to `callback_url`.
 
@@ -476,10 +643,11 @@ interface N8nWebhookPayload {
 
 ```
 You are a professional technical report writer for vocational internship journals.
-Rewrite the following raw student activity log into formal Indonesian Bahasa Indonesia.
+Rewrite the following raw student activity input into formal Indonesian Bahasa Indonesia.
 Extract a list of technical skill tags demonstrated.
 
-Raw text: "{raw_text}"
+Raw text: "{activity_input}"
+Image URL (optional reference): "{check_in_photo_url}"
 
 Respond ONLY in JSON with no markdown formatting:
 {
@@ -526,7 +694,7 @@ interface AiCallbackPayload {
 
 > 🔐 **Auth:** `accessToken` — Role: `STUDENT`, `MENTOR`, `TEACHER`
 
-Fetches paginated attendance and daily log history for a student.
+Fetches paginated attendance and daily log history for a student, including **mentor review statuses** for check-in/check-out and unit kegiatan.
 
 **Query Parameters:**
 
@@ -554,13 +722,22 @@ Fetches paginated attendance and daily log history for a student.
       "status_attendance": "PRESENT",
       "gps_status": "VALID",
       "distance_from_industry": 87.4,
+      "check_in_review_status": "APPROVED",
+      "check_out_review_status": "APPROVED",
+      "check_in_review_note": null,
+      "check_out_review_note": null,
+      "check_in_photo_url": "https://cdn.sijurnalpkl.id/photos/ATT_9mK3nBpXcR5Tz_in.jpg",
+      "check_out_photo_url": "https://cdn.sijurnalpkl.id/photos/ATT_9mK3nBpXcR5Tz_out.jpg",
       "daily_log": {
         "daily_id": "DLY_5hJ2mKpNrT8Wq",
         "raw_text": "hari ini gue bantu setup server baru terus debug error...",
         "processed_text": "Pada hari ini, saya berpartisipasi dalam konfigurasi server baru...",
         "skill_tags": ["Linux Server", "CI/CD", "Debugging"],
         "ai_status": "SUCCESS",
-        "approval_status": "PENDING"
+        "approval_status": "PENDING",
+        "review_note": null,
+        "appeal_note": null,
+        "appealed_at": null
       }
     }
   ],
@@ -571,6 +748,96 @@ Fetches paginated attendance and daily log history for a student.
     "totalPages": 3
   },
   "message": "Report history fetched."
+}
+```
+
+---
+
+### `POST /student/daily-logs/:daily_id/appeal`
+
+> ðŸ” **Auth:** `accessToken` â€” Role: `STUDENT`
+
+Allows a student to **appeal a rejected unit kegiatan**. This resets the `approval_status` back to `PENDING` and notifies the mentor.
+
+**Request:** `multipart/form-data`
+
+```typescript
+interface DailyLogAppealRequest {
+  appeal_note: string; // Min 10 chars
+  appeal_attachment?: File; // Optional image evidence (JPEG/PNG)
+}
+```
+
+**Server-side Processing:**
+
+1. Validate `daily_id` belongs to the authenticated student.
+2. Ensure `approval_status = REJECTED`.
+3. Store `appeal_note` (and optional attachment URL).
+4. Set `approval_status = PENDING`, `appealed_at = now()`.
+5. Notify Mentor for re-review.
+
+**Response `200 OK`:**
+
+```json
+{
+  "success": true,
+  "data": {
+    "daily_id": "DLY_5hJ2mKpNrT8Wq",
+    "approval_status": "PENDING",
+    "appeal_note": "Kegiatan sudah saya perjelas dan lampiran saya perbarui.",
+    "appealed_at": "2026-03-08T09:12:00+07:00"
+  },
+  "message": "Appeal submitted. Mentor will re-review your unit kegiatan."
+}
+```
+
+**Error Responses:**
+
+| Status | Code                   | Scenario                                 |
+| ------ | ---------------------- | ---------------------------------------- |
+| `400`  | `NOT_REJECTED`         | Daily log is not in `REJECTED` status    |
+| `403`  | `NOT_YOUR_DAILY_LOG`   | Daily log does not belong to this student |
+| `400`  | `APPEAL_NOTE_TOO_SHORT`| `appeal_note` under 10 characters         |
+
+---
+
+### `GET /student/evaluation`
+
+> ðŸ” **Auth:** `accessToken` â€” Role: `STUDENT`, `MENTOR`, `TEACHER`
+
+Fetches the submitted evaluation (penilaian) for a placement.  
+For MENTOR/TEACHER, pass `student_id`.
+
+**Query Parameters:**
+
+| Param        | Type     | Required | Description                                               |
+| ------------ | -------- | -------- | --------------------------------------------------------- |
+| `student_id` | `string` | No\*     | Required for MENTOR/TEACHER; defaults to self for STUDENT |
+| `placement_id` | `string` | No     | Filter by specific placement period                       |
+
+**Response `200 OK`:**
+
+```json
+{
+  "success": true,
+  "data": {
+    "evaluation_id": "EVL_4kJ7mBnXcP2Wy",
+    "placement_id": "PLC_1cA8jFqZmB3Ys",
+    "submitted_at": "2026-03-29T15:00:00+07:00",
+    "categories": [
+      {
+        "category_no": 1,
+        "title": "Menerapkan soft skills yang dibutuhkan dalam dunia kerja",
+        "description": "Murid sudah memiliki soft skill yang baik",
+        "items": [
+          { "item_no": "1.1", "text": "Komunikasi lisan/tulisan", "achievement": "YA", "score": 85 }
+        ]
+      }
+    ],
+    "instructor_notes": "Siswa menunjukkan peningkatan yang baik selama masa PKL.",
+    "ketidakhadiran": { "sakit": 2, "ijin": 1, "tanpa_keterangan": 0 }
+  },
+  "message": "Evaluation fetched."
 }
 ```
 
@@ -813,7 +1080,7 @@ interface AuditLogEntry {
 
 ### `GET /mentor/students`
 
-Returns a list of all students under this Mentor's industry, with their latest attendance status.
+Returns a list of all students under this Mentor's industry, with their latest attendance status and unit kegiatan stats.
 
 **Query Parameters:**
 
@@ -840,10 +1107,63 @@ Returns a list of all students under this Mentor's industry, with their latest a
         "gps_status": "VALID",
         "flagged": false
       },
-      "pending_logs": 3
+      "pending_logs": 3,
+      "log_stats": {
+        "pending": 3,
+        "approved": 12,
+        "rejected": 1
+      }
     }
   ],
   "message": "Student list fetched."
+}
+```
+
+---
+
+### `GET /mentor/daily-logs`
+
+Returns unit kegiatan (daily logs) for students under this Mentor's industry.
+
+**Query Parameters:**
+
+| Param        | Type     | Required | Description                          |
+| ------------ | -------- | -------- | ------------------------------------ |
+| `status`     | `string` | No       | Filter by `ApprovalStatus`           |
+| `student_id` | `string` | No       | Filter by a specific student         |
+| `from`       | `string` | No       | ISO 8601 date — start of range       |
+| `to`         | `string` | No       | ISO 8601 date — end of range         |
+| `page`       | `number` | No       | Default: 1                           |
+| `limit`      | `number` | No       | Default: 20, Max: 100                |
+
+**Response `200 OK`:**
+
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "daily_id": "DLY_5hJ2mKpNrT8Wq",
+      "student_id": "STU_7k3mN9pQx2Rv1",
+      "student_name": "Ahmad Fauzi",
+      "attendance_id": "ATT_9mK3nBpXcR5Tz",
+      "work_date": "2026-03-07",
+      "check_in_time": "2026-03-07T08:02:00+07:00",
+      "check_out_time": "2026-03-07T17:05:00+07:00",
+      "status_attendance": "PRESENT",
+      "check_in_review_status": "APPROVED",
+      "check_out_review_status": "APPROVED",
+      "raw_text": "hari ini gue bantu setup server baru...",
+      "processed_text": "Pada hari ini, saya berpartisipasi dalam konfigurasi server baru...",
+      "ai_status": "SUCCESS",
+      "approval_status": "PENDING",
+      "review_note": null,
+      "appeal_note": null,
+      "appealed_at": null
+    }
+  ],
+  "meta": { "page": 1, "limit": 20, "total": 45, "totalPages": 3 },
+  "message": "Daily logs fetched."
 }
 ```
 
@@ -867,7 +1187,7 @@ interface BatchApproveRequest {
 
 1. Validate all `daily_log_ids` belong to students under this Mentor's industry.
 2. Reject any IDs where `approval_status` is already `APPROVED` or `REJECTED`.
-3. Bulk update `approval_status`, `approved_by = mentor_id`, `approved_at = now()`.
+3. Bulk update `approval_status`, `review_note = note`, `approved_by = mentor_id`, `approved_at = now()`.
 
 **Response `200 OK`:**
 
@@ -894,20 +1214,68 @@ interface BatchApproveRequest {
 
 ---
 
+### `PATCH /mentor/attendance-review`
+
+Batch review for **flagged check-in/check-out** records.
+
+**Request Body:**
+
+```typescript
+interface AttendanceReviewRequest {
+  attendance_ids: string[];
+  target: "CHECK_IN" | "CHECK_OUT";
+  action: "APPROVE" | "REJECT";
+  note?: string;
+}
+```
+
+**Response `200 OK`:**
+
+```json
+{
+  "success": true,
+  "data": {
+    "processed": 4,
+    "action": "APPROVE",
+    "target": "CHECK_IN"
+  },
+  "message": "Attendance review completed."
+}
+```
+
+**Error Responses:**
+
+| Status | Code             | Scenario                                      |
+| ------ | ---------------- | --------------------------------------------- |
+| `400`  | `EMPTY_IDS`      | `attendance_ids` array is empty               |
+| `403`  | `CROSS_INDUSTRY` | Attendance does not belong to this Mentor     |
+| `400`  | `INVALID_IDS`    | One or more `attendance_ids` do not exist     |
+
+---
+
 ### `POST /mentor/evaluation`
 
 Submits the mandatory end-of-placement evaluation. **This is a gatekeeper action** — until submitted, the student cannot access `/student/final-recommendation`.
+
+> **Ketidakhadiran is auto-calculated** by the system from attendance + approved leave, and is returned in the response (not accepted in request).
 
 **Request Body:**
 
 ```typescript
 interface IndustryEvaluationRequest {
   placement_id: string;
-  discipline_score: number; // 1–100
-  technical_score: number; // 1–100
-  communication_score: number; // 1–100
-  teamwork_score: number; // 1–100
-  notes: string; // Min 30 chars
+  categories: {
+    category_no: number;
+    title: string;
+    description?: string;
+    items: {
+      item_no: string; // e.g. "1.1"
+      text: string;
+      achievement: "YA" | "TIDAK";
+      score: number; // 0–100
+    }[];
+  }[];
+  instructor_notes: string; // Min 10 chars
 }
 ```
 
@@ -920,6 +1288,12 @@ interface IndustryEvaluationRequest {
     "evaluation_id": "EVL_4kJ7mBnXcP2Wy",
     "placement_id": "PLC_1cA8jFqZmB3Ys",
     "submitted_at": "2026-03-29T15:00:00+07:00",
+    "average_score": 86,
+    "ketidakhadiran": {
+      "sakit": 2,
+      "ijin": 1,
+      "tanpa_keterangan": 0
+    },
     "gate_unlocked": true,
     "message_detail": "Student can now access the final recommendation."
   },
@@ -932,8 +1306,76 @@ interface IndustryEvaluationRequest {
 | Status | Code                 | Scenario                                            |
 | ------ | -------------------- | --------------------------------------------------- |
 | `409`  | `ALREADY_EVALUATED`  | Evaluation for this placement already submitted     |
-| `400`  | `SCORE_OUT_OF_RANGE` | Any score is not between 1 and 100                  |
+| `400`  | `SCORE_OUT_OF_RANGE` | Any item score is not between 0 and 100             |
 | `403`  | `NOT_YOUR_STUDENT`   | Placement does not belong to this Mentor's industry |
+
+---
+
+### `POST /mentor/questionnaires`
+
+Submits the PKL questionnaire filled by the Mentor (Kuisioner).
+
+**Request Body:**
+
+```typescript
+interface QuestionnaireRequest {
+  placement_id: string;
+  type: "KERJASAMA" | "PELAKSANAAN";
+  school_ratings: { no: number; score: 1 | 2 | 3 | 4 | 5 }[]; // Required for both
+  student_ratings?: { no: number; score: 1 | 2 | 3 | 4 | 5 }[]; // Required for PELAKSANAAN
+  q1: "YA" | "TIDAK"; // Required
+  q2?: "YA" | "TIDAK"; // Required for KERJASAMA
+  suggestion?: string;
+}
+```
+
+**Response `201 Created`:**
+
+```json
+{
+  "success": true,
+  "data": {
+    "questionnaire_id": "QSR_8mH3kBpVt2Xz",
+    "type": "KERJASAMA",
+    "submitted_at": "2026-03-29T15:10:00+07:00"
+  },
+  "message": "Questionnaire submitted."
+}
+```
+
+---
+
+### `GET /mentor/questionnaires`
+
+Fetches submitted questionnaires for the Mentor's industry.
+
+**Query Parameters:**
+
+| Param        | Type     | Required | Description                    |
+| ------------ | -------- | -------- | ------------------------------ |
+| `type`       | `string` | No       | `KERJASAMA` or `PELAKSANAAN`   |
+| `placement_id` | `string` | No     | Filter by placement            |
+| `page`       | `number` | No       | Default: 1                     |
+| `limit`      | `number` | No       | Default: 20                    |
+
+**Response `200 OK`:**
+
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "questionnaire_id": "QSR_8mH3kBpVt2Xz",
+      "placement_id": "PLC_1cA8jFqZmB3Ys",
+      "type": "KERJASAMA",
+      "average_score": 4.2,
+      "submitted_at": "2026-03-29T15:10:00+07:00"
+    }
+  ],
+  "meta": { "page": 1, "limit": 20, "total": 1, "totalPages": 1 },
+  "message": "Questionnaires fetched."
+}
+```
 
 ---
 
@@ -1014,12 +1456,6 @@ Returns aggregated analytics for all students under this Teacher's supervision.
           "total_days": 21,
           "attendance_rate_pct": 90.5
         },
-        "overwork_detected": true,
-        "overwork_detail": {
-          "occurrences": 5,
-          "latest_checkout": "2026-03-06T21:30:00+07:00",
-          "threshold_exceeded": "22:00 WIB (3+ occurrences in last 7 days)"
-        },
         "placement_end_date": "2026-03-29",
         "days_remaining": 22
       }
@@ -1029,7 +1465,44 @@ Returns aggregated analytics for all students under this Teacher's supervision.
 }
 ```
 
-> **Overwork Detection Logic:** Flag a student if `check_out_time` is after the configured work-end threshold (e.g., 20:00) on **3 or more occasions within any 7-day rolling window**.
+---
+
+### `GET /teacher/students`
+
+Returns students under this Teacher's supervision, used for **Detail Murid** view.
+
+**Query Parameters:**
+
+| Param          | Type     | Required | Description                  |
+| -------------- | -------- | -------- | ---------------------------- |
+| `placement_id` | `string` | No       | Filter by specific placement |
+| `status`       | `string` | No       | Filter by `PklStatus`        |
+| `page`         | `number` | No       | Default: 1                   |
+| `limit`        | `number` | No       | Default: 20                  |
+
+**Response `200 OK`:**
+
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "student_id": "STU_7k3mN9pQx2Rv1",
+      "name": "Ahmad Fauzi",
+      "school": "SMKN 1 Cibinong",
+      "industry": "PT. Teknologi Nusantara",
+      "placement_end": "2026-03-29",
+      "log_stats": {
+        "pending": 3,
+        "approved": 12,
+        "rejected": 1
+      }
+    }
+  ],
+  "meta": { "page": 1, "limit": 20, "total": 12, "totalPages": 1 },
+  "message": "Teacher student list fetched."
+}
+```
 
 ---
 
@@ -1106,6 +1579,39 @@ Updates user details. Cannot be used to change `role` or `password`.
 #### `DELETE /admin/users/:id`
 
 Soft-deletes a user. Sets `activated = false` and detaches from active placements.
+
+---
+
+#### `GET /admin/activities`
+
+Returns recent activity feed for the Admin dashboard.
+
+**Query Parameters:**
+
+| Param   | Type     | Required | Description              |
+| ------- | -------- | -------- | ------------------------ |
+| `role`  | `string` | No       | Filter by actor role     |
+| `page`  | `number` | No       | Default: 1               |
+| `limit` | `number` | No       | Default: 20              |
+
+**Response `200 OK`:**
+
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "activity_id": "ACT_7hJ2mKpNrT8Wq",
+      "action_title": "Approve Absen",
+      "actor_name": "Fani",
+      "role": "TEACHER",
+      "occurred_at": "2026-03-17T10:24:54+07:00"
+    }
+  ],
+  "meta": { "page": 1, "limit": 20, "total": 5, "totalPages": 1 },
+  "message": "Admin activities fetched."
+}
+```
 
 ---
 
@@ -1212,7 +1718,6 @@ Returns and allows updating global system parameters. Work hours are now configu
     "work_start_time": "07:30",
     "late_threshold_time": "08:00",
     "work_end_time": "17:00",
-    "overwork_threshold": "20:00",
     "gps_accuracy_threshold": 50,
     "ai_retry_max_attempts": 3
   },
@@ -1481,6 +1986,10 @@ enum WorkHourType {
   FIXED_SHIFT = "FIXED_SHIFT",
   MINIMUM_HOURS = "MINIMUM_HOURS",
 }
+enum QuestionnaireType {
+  KERJASAMA = "KERJASAMA",
+  PELAKSANAAN = "PELAKSANAAN",
+}
 ```
 
 ### 12.2 Entity Response Objects
@@ -1494,6 +2003,73 @@ interface UserDTO {
   role: Role;
   activated: boolean;
   created_at: string;
+}
+
+interface StudentProfileDTO {
+  name: string;
+  nisn: string;
+  kelas: string;
+  company_name: string;
+  status_pkl: PklStatus;
+  masa_prakerin: string;
+  pembimbing_sekolah: string;
+  mentor_industri: string;
+  whatsapp_number: string;
+  email: string;
+}
+
+interface MentorProfileDTO {
+  name: string;
+  email: string;
+  phone: string;
+  position: string;
+  company_name: string;
+  department: string;
+  office_location: string;
+  address: string;
+}
+
+interface TeacherProfileDTO {
+  name: string;
+  email: string;
+  whatsapp_number: string;
+  school_name: string;
+  nip: string;
+}
+
+interface ContactCardDTO {
+  name: string;
+  nip: string | null;
+  whatsapp_number: string;
+  avatar_url?: string;
+}
+
+interface ContactsDTO {
+  pembimbing_sekolah: ContactCardDTO;
+  mentor_industri: ContactCardDTO;
+  teknisi: ContactCardDTO;
+}
+
+interface AttendanceSummaryDTO {
+  present: number;
+  late: number;
+  leave: number;
+  sick: number;
+  alpha: number;
+  total_days: number;
+  ketidakhadiran: {
+    sakit: number;
+    ijin: number;
+    tanpa_keterangan: number;
+  };
+}
+
+interface QuestionnaireDTO {
+  questionnaire_id: string;
+  placement_id: string;
+  type: QuestionnaireType;
+  average_score: number;
+  submitted_at: string;
 }
 
 interface AttendanceLogDTO {
@@ -1513,6 +2089,10 @@ interface AttendanceLogDTO {
   gps_accuracy: number | null;
   gps_attempt_count: number;
   status_attendance: AttendanceStatus;
+  check_in_review_status: ApprovalStatus;
+  check_out_review_status: ApprovalStatus;
+  check_in_review_note: string | null;
+  check_out_review_note: string | null;
   created_at: string;
 }
 
@@ -1524,6 +2104,9 @@ interface DailyLogDTO {
   skill_tags: string[];
   ai_status: AiStatus;
   approval_status: ApprovalStatus;
+  review_note: string | null;
+  appeal_note: string | null;
+  appealed_at: string | null;
   approved_by: string | null;
   approved_at: string | null;
   created_at: string;
@@ -1579,11 +2162,24 @@ interface IndustryEvaluationDTO {
   evaluation_id: string;
   mentor_id: string;
   placement_id: string;
-  discipline_score: number;
-  technical_score: number;
-  communication_score: number;
-  teamwork_score: number;
-  notes: string;
+  categories: {
+    category_no: number;
+    title: string;
+    description?: string;
+    items: {
+      item_no: string;
+      text: string;
+      achievement: "YA" | "TIDAK";
+      score: number;
+    }[];
+  }[];
+  instructor_notes: string;
+  average_score: number;
+  ketidakhadiran: {
+    sakit: number;
+    ijin: number;
+    tanpa_keterangan: number;
+  };
   submitted_at: string;
 }
 ```
@@ -1604,4 +2200,4 @@ interface JwtPayload {
 
 ---
 
-_Documentation Version: 1.0.0 | Last Updated: 2026-03-07 | Team: CC26-PS058_
+_Documentation Version: 1.0.0 | Last Updated: 2026-04-10 | Team: CC26-PS058_
