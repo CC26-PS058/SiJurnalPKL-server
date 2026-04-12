@@ -33,20 +33,78 @@ router.get('/students', async (req: Request, res: Response) => {
     },
   });
 
-  const students = placements.map((p) => ({
-    placementId: p.id,
-    studentId: p.student.id,
-    nis: p.student.nis.toString(),
-    name: p.student.user.name,
-    school: p.student.school.name,
-    whatsappNumber: p.student.user.whatsappNumber,
-    startDate: p.startDate,
-    endDate: p.endDate,
+  const students = await Promise.all(placements.map(async (p) => {
+    const logs = await prisma.dailyLog.groupBy({
+      by: ['approvalStatus'],
+      where: { attendance: { placementId: p.id } },
+      _count: { approvalStatus: true }
+    });
+
+    const pending = logs.find(l => l.approvalStatus === 'PENDING')?._count.approvalStatus || 0;
+    const approved = logs.find(l => l.approvalStatus === 'APPROVED')?._count.approvalStatus || 0;
+    const rejected = logs.find(l => l.approvalStatus === 'REJECTED')?._count.approvalStatus || 0;
+
+    return {
+      placementId: p.id,
+      studentId: p.student.id,
+      nis: p.student.nis.toString(),
+      name: p.student.user.name,
+      school: p.student.school.name,
+      perusahaan: mentor.industry.name,
+      whatsappNumber: p.student.user.whatsappNumber,
+      startDate: p.startDate,
+      endDate: p.endDate,
+      stats: { pending, approved, rejected, total: pending + approved + rejected }
+    };
   }));
 
   res.json({ success: true, data: students });
 });
 
+// ============================================================
+// GET /api/mentor/analytics — High-level statistics
+// ============================================================
+router.get('/analytics', async (req: Request, res: Response) => {
+  const { userId } = req.user!;
+
+  const mentor = await prisma.mentor.findUnique({ where: { userId } });
+  if (!mentor) throw new AppError(404, 'MENTOR_NOT_FOUND', 'Data mentor tidak ditemukan.');
+
+  const placements = await prisma.placement.findMany({
+    where: { industryId: mentor.industryId, status: 'ACTIVE' },
+    select: { id: true },
+  });
+  const placementIds = placements.map(p => p.id);
+
+  const totalStudents = placementIds.length;
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  
+  const presentToday = await prisma.attendanceLog.count({
+    where: {
+      placementId: { in: placementIds },
+      workDate: { gte: today },
+      statusAttendance: 'PRESENT'
+    }
+  });
+
+  const pendingApprovals = await prisma.dailyLog.count({
+    where: {
+      attendance: { placementId: { in: placementIds } },
+      approvalStatus: 'PENDING'
+    }
+  });
+
+  res.json({
+    success: true,
+    data: {
+      totalStudents,
+      presentToday,
+      pendingApprovals
+    }
+  });
+});
 // ============================================================
 // GET /api/mentor/daily-logs — Daily logs of students
 // ============================================================
@@ -57,7 +115,10 @@ router.get('/daily-logs', async (req: Request, res: Response) => {
   const page = parseInt(req.query.page as string) || 1;
   const limit = parseInt(req.query.limit as string) || 20;
 
-  const mentor = await prisma.mentor.findUnique({ where: { userId } });
+  const mentor = await prisma.mentor.findUnique({ 
+    where: { userId },
+    include: { industry: true }
+  });
   if (!mentor) throw new AppError(404, 'MENTOR_NOT_FOUND', 'Data mentor tidak ditemukan.');
 
   // Get placement IDs in this mentor's industry
@@ -107,6 +168,10 @@ router.get('/daily-logs', async (req: Request, res: Response) => {
         aiStatus: log.aiStatus,
         approvalStatus: log.approvalStatus,
         createdAt: log.createdAt,
+        checkInTime: log.attendance.checkInTime,
+        checkOutTime: log.attendance.checkOutTime,
+        statusAttendance: log.attendance.statusAttendance,
+        perusahaan: mentor.industry.name,
       })),
       pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
     },

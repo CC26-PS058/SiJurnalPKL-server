@@ -113,8 +113,12 @@ router.post('/change-password', authMiddleware, async (req: Request, res: Respon
   });
 
   // Generate new tokens with activated=true
+  // NOTE: Must construct payload explicitly — do NOT spread req.user
+  // because it contains JWT metadata (iat, exp) that conflicts with jwt.sign
   const payload: JwtPayload = {
-    ...req.user!,
+    userId: req.user!.userId,
+    username: req.user!.username,
+    role: req.user!.role,
     activated: true,
   };
 

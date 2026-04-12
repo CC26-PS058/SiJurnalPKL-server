@@ -346,16 +346,101 @@ router.post('/placements', async (req: Request, res: Response) => {
 });
 
 // ============================================================
-// ACTIVITY LOG — for admin dashboard
+// ADMIN DASHBOARD STATS & ACTIVITIES
 // ============================================================
-router.get('/activity-log', async (_req: Request, res: Response) => {
-  const recentUsers = await prisma.user.findMany({
-    orderBy: { createdAt: 'desc' },
-    take: 10,
-    select: { name: true, role: true, createdAt: true, activated: true },
-  });
+router.get('/dashboard', async (_req: Request, res: Response) => {
+  try {
+    // 1. Get Counts
+    const [usersCount, industriesCount, teachersCount] = await Promise.all([
+      prisma.user.count(),
+      prisma.industry.count(),
+      prisma.teacher.count(),
+    ]);
 
-  res.json({ success: true, data: recentUsers });
+    // 2. Get Recent Activities
+    // A. Users created
+    const recentUsers = await prisma.user.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: 5,
+      select: { id: true, name: true, role: true, createdAt: true },
+    });
+
+    // B. Reccent attendance logs
+    const recentAttendance = await prisma.attendanceLog.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: 5,
+      include: { student: { include: { user: true } } },
+    });
+
+    // C. Recent approvals (audit logs or daily logs mapped loosely)
+    // We'll just fetch latest 5 daily logs that are approved
+    const recentApprovals = await prisma.dailyLog.findMany({
+      where: { approvalStatus: 'APPROVED', approvedBy: { not: null } },
+      orderBy: { approvedAt: 'desc' },
+      take: 5,
+      include: { mentor: { include: { user: true } } },
+    });
+
+    // Transform and Unify
+    const rawActivities = [
+      ...recentUsers.map((u) => ({
+        id: `usr-${u.id}`,
+        actionTitle: 'Pengguna Baru',
+        actorName: u.name,
+        date: u.createdAt,
+        roleBadge: 'Admin',
+      })),
+      ...recentAttendance.map((a) => ({
+        id: `att-${a.id}`,
+        actionTitle: 'Absen Siswa',
+        actorName: a.student?.user?.name || 'Siswa',
+        date: a.createdAt,
+        roleBadge: 'Siswa',
+      })),
+      ...recentApprovals.map((l) => ({
+        id: `appr-${l.id}`,
+        actionTitle: 'Approve Jurnal',
+        actorName: l.mentor?.user?.name || 'Guru/Mentor',
+        date: l.approvedAt!,
+        roleBadge: 'Guru',
+      })),
+    ];
+
+    // Sort descending by date and take 5
+    const activities = rawActivities
+      .sort((a, b) => b.date.getTime() - a.date.getTime())
+      .slice(0, 5)
+      .map((act) => {
+        // format date like '17 Mar 2026'
+        const dateStr = act.date.toLocaleDateString('id-ID', {
+          day: '2-digit',
+          month: 'short',
+          year: 'numeric',
+        });
+        return {
+          id: act.id,
+          actionTitle: act.actionTitle,
+          actorName: act.actorName,
+          dateStr,
+          roleBadge: act.roleBadge,
+        };
+      });
+
+    res.json({
+      success: true,
+      data: {
+        stats: {
+          usersCount,
+          industriesCount,
+          teachersCount,
+        },
+        activities,
+      },
+    });
+  } catch (error) {
+    console.error('Error fetching admin dashboard:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
 });
 
 export default router;

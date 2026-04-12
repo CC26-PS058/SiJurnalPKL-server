@@ -5,11 +5,12 @@
 // ============================================================
 
 generator client {
-  provider = "prisma-client"
+  provider = "prisma-client-js"
   output   = "../generated/prisma"
 }
 datasource db {
   provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
 // ============================================================
@@ -46,6 +47,8 @@ enum AttendanceStatus {
   LATE
   ABSENT
   LEAVE  // Izin (via WhatsApp ke mentor)
+  SICK   // Sakit (via WhatsApp/surat ke mentor)
+  EXCUSED // Izin resmi lainnya
   ALPHA  // Tidak masuk tanpa keterangan
 }
 

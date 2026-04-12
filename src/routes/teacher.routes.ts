@@ -76,23 +76,91 @@ router.get('/analytics', async (req: Request, res: Response) => {
     where: { schoolId: teacher.schoolId, statusPkl: 'FINISHED' },
   });
 
-  // This week's attendance
+  // Weekly attendance array construction
   const now = new Date();
   const startOfWeek = new Date(now);
   startOfWeek.setDate(now.getDate() - now.getDay() + 1); // Monday
   startOfWeek.setHours(0, 0, 0, 0);
 
-  const weeklyAttendance = await prisma.attendanceLog.groupBy({
-    by: ['statusAttendance'],
+  const endOfWeek = new Date(startOfWeek);
+  endOfWeek.setDate(startOfWeek.getDate() + 6);
+  endOfWeek.setHours(23, 59, 59, 999);
+
+  const logsThisWeek = await prisma.attendanceLog.findMany({
     where: {
       student: { schoolId: teacher.schoolId },
-      workDate: { gte: startOfWeek },
+      workDate: { gte: startOfWeek, lte: endOfWeek },
     },
+    select: { workDate: true, statusAttendance: true },
+  });
+
+  const daysOfWeek = ['MIN', 'SEN', 'SEL', 'RAB', 'KAM', 'JUM', 'SAB'];
+  const initialWeekly = [
+    { day: 'SEN', hadir: 0, izinSakit: 0, alpha: 0 },
+    { day: 'SEL', hadir: 0, izinSakit: 0, alpha: 0 },
+    { day: 'RAB', hadir: 0, izinSakit: 0, alpha: 0 },
+    { day: 'KAM', hadir: 0, izinSakit: 0, alpha: 0 },
+    { day: 'JUM', hadir: 0, izinSakit: 0, alpha: 0 },
+    { day: 'SAB', hadir: 0, izinSakit: 0, alpha: 0 },
+    { day: 'MIN', hadir: 0, izinSakit: 0, alpha: 0 },
+  ];
+
+  logsThisWeek.forEach((log) => {
+    const dayName = daysOfWeek[log.workDate.getDay()];
+    const index = initialWeekly.findIndex(w => w.day === dayName);
+    if (index !== -1) {
+      if (log.statusAttendance === 'PRESENT') initialWeekly[index].hadir += 1;
+      else if (log.statusAttendance === 'SICK' || log.statusAttendance === 'EXCUSED') initialWeekly[index].izinSakit += 1;
+      else if (log.statusAttendance === 'ABSENT') initialWeekly[index].alpha += 1;
+    }
+  });
+
+  // Overall attendance ratio
+  const overallAttendance = await prisma.attendanceLog.groupBy({
+    by: ['statusAttendance'],
+    where: { student: { schoolId: teacher.schoolId } },
     _count: true,
   });
 
-  const attendanceMap: Record<string, number> = {};
-  weeklyAttendance.forEach((a) => { attendanceMap[a.statusAttendance] = a._count; });
+  const attendanceRatioMap: Record<string, number> = {
+    Hadir: 0,
+    Izin: 0,
+    Sakit: 0,
+    Alpha: 0,
+  };
+
+  overallAttendance.forEach(a => {
+    if (a.statusAttendance === 'PRESENT') attendanceRatioMap['Hadir'] += a._count;
+    else if (a.statusAttendance === 'EXCUSED') attendanceRatioMap['Izin'] += a._count;
+    else if (a.statusAttendance === 'SICK') attendanceRatioMap['Sakit'] += a._count;
+    else if (a.statusAttendance === 'ABSENT') attendanceRatioMap['Alpha'] += a._count;
+  });
+
+  // PKL Akan Selesai (next 30 days)
+  const in30Days = new Date();
+  in30Days.setDate(now.getDate() + 30);
+
+  const endingPlacements = await prisma.placement.findMany({
+    where: {
+      student: { schoolId: teacher.schoolId },
+      status: 'ACTIVE',
+      endDate: { gte: now, lte: in30Days }
+    },
+    include: {
+      student: { include: { user: true } },
+      industry: true,
+    },
+    orderBy: { endDate: 'asc' },
+    take: 5
+  });
+
+  const pklEndingSoon = endingPlacements.map(p => ({
+    id: p.id,
+    nama: p.student.user.name,
+    perusahaan: p.industry.name,
+    tanggalSelesai: p.endDate.toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' }),
+    avatarColor: '#4B48EC'
+  }));
 
   res.json({
     success: true,
@@ -101,7 +169,9 @@ router.get('/analytics', async (req: Request, res: Response) => {
       activePlacements,
       finishedPkl,
       notStarted: totalStudents - activePlacements - finishedPkl,
-      weeklyAttendance: attendanceMap,
+      weeklyAttendance: initialWeekly,
+      attendanceRatio: attendanceRatioMap,
+      pklEndingSoon,
     },
   });
 });
