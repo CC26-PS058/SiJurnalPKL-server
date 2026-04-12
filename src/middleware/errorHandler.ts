@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
+import { ZodError } from 'zod';
 
 export class AppError extends Error {
   statusCode: number;
@@ -26,6 +27,22 @@ export function errorHandler(
       error: {
         code: err.code,
         message: err.message,
+      },
+    });
+    return;
+  }
+
+  if (err instanceof ZodError) {
+    const firstIssue = err.issues[0];
+    res.status(400).json({
+      success: false,
+      error: {
+        code: 'VALIDATION_ERROR',
+        message: firstIssue?.message || 'Data yang dikirim tidak valid.',
+        details: err.issues.map((issue) => ({
+          path: issue.path.join('.'),
+          message: issue.message,
+        })),
       },
     });
     return;

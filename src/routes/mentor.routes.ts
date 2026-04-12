@@ -4,6 +4,7 @@ import prisma from '../configs/db.js';
 import { authMiddleware, requireRole, requireActivated } from '../middleware/auth.js';
 import { AppError } from '../middleware/errorHandler.js';
 import { generateId } from '../utils/nanoid.js';
+import { getJakartaWorkDate } from '../utils/date.js';
 
 const router = Router();
 router.use(authMiddleware, requireActivated, requireRole('MENTOR'));
@@ -78,14 +79,13 @@ router.get('/analytics', async (req: Request, res: Response) => {
 
   const totalStudents = placementIds.length;
 
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  const today = getJakartaWorkDate();
   
   const presentToday = await prisma.attendanceLog.count({
     where: {
       placementId: { in: placementIds },
       workDate: { gte: today },
-      statusAttendance: 'PRESENT'
+      statusAttendance: { in: ['PRESENT', 'LATE'] }
     }
   });
 
@@ -195,8 +195,30 @@ router.post('/approve-batch', async (req: Request, res: Response) => {
   const mentor = await prisma.mentor.findUnique({ where: { userId } });
   if (!mentor) throw new AppError(404, 'MENTOR_NOT_FOUND', 'Data mentor tidak ditemukan.');
 
+  const placementIds = new Set(
+    (
+      await prisma.placement.findMany({
+        where: { industryId: mentor.industryId },
+        select: { id: true },
+      })
+    ).map((placement) => placement.id)
+  );
+
   const results = await Promise.all(
     logs.map(async ({ dailyLogId, action }) => {
+      const existing = await prisma.dailyLog.findUnique({
+        where: { id: dailyLogId },
+        include: {
+          attendance: {
+            select: { placementId: true },
+          },
+        },
+      });
+
+      if (!existing || !placementIds.has(existing.attendance.placementId)) {
+        throw new AppError(403, 'FORBIDDEN', 'Anda tidak dapat memproses jurnal ini.');
+      }
+
       const updated = await prisma.dailyLog.update({
         where: { id: dailyLogId },
         data: {

@@ -5,6 +5,7 @@ import { authMiddleware, requireRole, requireActivated } from '../middleware/aut
 import { AppError } from '../middleware/errorHandler.js';
 import { generateId } from '../utils/nanoid.js';
 import { isWithinRadius } from '../utils/geofencing.js';
+import { getJakartaMonthRange, getJakartaWorkDate } from '../utils/date.js';
 import fs from 'fs';
 import path from 'path';
 
@@ -43,8 +44,7 @@ router.post('/check-in', requireRole('STUDENT'), async (req: Request, res: Respo
 
   const placement = student.placements[0];
   const industry = placement.industry;
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  const today = getJakartaWorkDate();
 
   // Check duplicate
   const existing = await prisma.attendanceLog.findUnique({
@@ -157,8 +157,7 @@ router.post('/check-out', requireRole('STUDENT'), async (req: Request, res: Resp
   }
 
   const placement = student.placements[0];
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  const today = getJakartaWorkDate();
 
   // Find today's attendance
   const attendance = await prisma.attendanceLog.findUnique({
@@ -168,12 +167,15 @@ router.post('/check-out', requireRole('STUDENT'), async (req: Request, res: Resp
         workDate: today,
       },
     },
+    include: {
+      dailyLog: true,
+    },
   });
 
   if (!attendance) {
     throw new AppError(404, 'NOT_CHECKED_IN', 'Anda belum check-in hari ini.');
   }
-  if (attendance.checkOutTime) {
+  if (attendance.checkOutTime && attendance.dailyLog) {
     throw new AppError(409, 'ALREADY_CHECKED_OUT', 'Anda sudah check-out hari ini.');
   }
 
@@ -191,35 +193,51 @@ router.post('/check-out', requireRole('STUDENT'), async (req: Request, res: Resp
     checkOutPhotoUrl = `/uploads/checkout/${photoFileName}`;
   }
 
-  // Update attendance with check-out time
-  await prisma.attendanceLog.update({
-    where: { id: attendance.id },
-    data: {
-      checkOutTime: new Date(),
-      checkOutPhotoUrl,
-    },
-  });
+  const isRecovery = !!attendance.checkOutTime && !attendance.dailyLog;
+  const effectiveCheckOutPhotoUrl = checkOutPhotoUrl || attendance.checkOutPhotoUrl || null;
 
-  // Create daily log
-  const dailyLog = await prisma.dailyLog.create({
-    data: {
-      id: generateId('dailyLog'),
-      attendanceId: attendance.id,
-      rawText: activityText,
-      processedText: processedText || null,
-      photoUrl: checkOutPhotoUrl,
-      skillTags: skillTags || [],
-      aiStatus: processedText ? 'SUCCESS' : 'PENDING',
-      approvalStatus: 'PENDING',
-    },
+  const dailyLog = await prisma.$transaction(async (tx) => {
+    if (!attendance.checkOutTime) {
+      await tx.attendanceLog.update({
+        where: { id: attendance.id },
+        data: {
+          checkOutTime: new Date(),
+          checkOutPhotoUrl: effectiveCheckOutPhotoUrl,
+        },
+      });
+    } else if (checkOutPhotoUrl && checkOutPhotoUrl !== attendance.checkOutPhotoUrl) {
+      await tx.attendanceLog.update({
+        where: { id: attendance.id },
+        data: {
+          checkOutPhotoUrl,
+        },
+      });
+    }
+
+    if (attendance.dailyLog) {
+      return attendance.dailyLog;
+    }
+
+    return tx.dailyLog.create({
+      data: {
+        id: generateId('dailyLog'),
+        attendanceId: attendance.id,
+        rawText: activityText,
+        processedText: processedText || null,
+        photoUrl: effectiveCheckOutPhotoUrl,
+        skillTags: skillTags || [],
+        aiStatus: processedText ? 'SUCCESS' : 'PENDING',
+        approvalStatus: 'PENDING',
+      },
+    });
   });
 
   res.status(201).json({
     success: true,
     data: {
       dailyLogId: dailyLog.id,
-      checkOutTime: new Date(),
-      message: 'Check-out berhasil.',
+      checkOutTime: attendance.checkOutTime || new Date(),
+      message: isRecovery ? 'Jurnal harian berhasil dilengkapi.' : 'Check-out berhasil.',
     },
   });
 });
@@ -255,13 +273,17 @@ router.get('/summary', requireRole('STUDENT'), async (req: Request, res: Respons
   counts.forEach((c) => { summary[c.statusAttendance] = c._count; });
 
   // Today's attendance status
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  const today = getJakartaWorkDate();
   const todayAttendance = await prisma.attendanceLog.findUnique({
     where: {
       placementId_workDate: {
         placementId,
         workDate: today,
+      },
+    },
+    include: {
+      dailyLog: {
+        select: { id: true },
       },
     },
   });
@@ -277,9 +299,11 @@ router.get('/summary', requireRole('STUDENT'), async (req: Request, res: Respons
         checkOutTime: todayAttendance.checkOutTime,
         hasCheckedIn: true,
         hasCheckedOut: !!todayAttendance.checkOutTime,
+        hasReported: !!todayAttendance.dailyLog,
       } : {
         hasCheckedIn: false,
         hasCheckedOut: false,
+        hasReported: false,
       },
     },
   });
@@ -308,9 +332,7 @@ router.get('/history', requireRole('STUDENT', 'MENTOR', 'TEACHER'), async (req: 
   if (targetStudentId) where.studentId = targetStudentId;
 
   if (month) {
-    const [year, m] = month.split('-').map(Number);
-    const startDate = new Date(year, m - 1, 1);
-    const endDate = new Date(year, m, 0);
+    const { startDate, endDate } = getJakartaMonthRange(month);
     where.workDate = { gte: startDate, lte: endDate };
   }
 

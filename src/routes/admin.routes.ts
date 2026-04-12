@@ -239,17 +239,58 @@ router.get('/industries', async (req: Request, res: Response) => {
   res.json({ success: true, data: industries });
 });
 
-const industrySchema = z.object({
-  name: z.string().min(1),
-  address: z.string().min(1),
-  latitude: z.number(),
-  longitude: z.number(),
-  radiusMeter: z.number().min(50).max(5000),
+const workTimeSchema = z.string().regex(/^\d{2}:\d{2}$/, 'Format jam harus HH:MM');
+
+const industryBaseSchema = z.object({
+  name: z.string().trim().min(1, 'Nama perusahaan wajib diisi.'),
+  address: z.string().trim().min(1, 'Alamat perusahaan wajib diisi.'),
+  latitude: z.coerce.number().finite('Latitude tidak valid.'),
+  longitude: z.coerce.number().finite('Longitude tidak valid.'),
+  radiusMeter: z.coerce.number().int('Radius absensi harus berupa angka bulat.').min(1, 'Radius absensi minimal 1 meter.').max(5000, 'Radius absensi maksimal 5000 meter.'),
   workHourType: z.enum(['FIXED_SHIFT', 'MINIMUM_HOURS']),
-  minimumHours: z.number().optional(),
-  fixedCheckInTime: z.string().optional(),
-  fixedCheckOutTime: z.string().optional(),
+  minimumHours: z.coerce.number().int('Minimal jam kerja harus berupa angka bulat.').min(1, 'Minimal jam kerja minimal 1 jam.').max(24, 'Minimal jam kerja maksimal 24 jam.').optional(),
+  fixedCheckInTime: workTimeSchema.optional(),
+  fixedCheckOutTime: workTimeSchema.optional(),
 });
+
+const validateIndustryWorkRules = (
+  data: {
+    workHourType?: 'FIXED_SHIFT' | 'MINIMUM_HOURS';
+    minimumHours?: number;
+    fixedCheckInTime?: string;
+    fixedCheckOutTime?: string;
+  },
+  ctx: z.RefinementCtx
+) => {
+  if (data.workHourType === 'FIXED_SHIFT') {
+    if (!data.fixedCheckInTime) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['fixedCheckInTime'],
+        message: 'Jam masuk wajib diisi untuk tipe Fixed Shift.',
+      });
+    }
+
+    if (!data.fixedCheckOutTime) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['fixedCheckOutTime'],
+        message: 'Jam pulang wajib diisi untuk tipe Fixed Shift.',
+      });
+    }
+  }
+
+  if (data.workHourType === 'MINIMUM_HOURS' && data.minimumHours === undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['minimumHours'],
+      message: 'Minimal jam kerja wajib diisi untuk tipe Fleksibel.',
+    });
+  }
+};
+
+const industrySchema = industryBaseSchema.superRefine(validateIndustryWorkRules);
+const industryUpdateSchema = industryBaseSchema.partial().superRefine(validateIndustryWorkRules);
 
 router.post('/industries', async (req: Request, res: Response) => {
   const data = industrySchema.parse(req.body);
@@ -266,7 +307,7 @@ router.post('/industries', async (req: Request, res: Response) => {
 
 router.patch('/industries/:id', async (req: Request, res: Response) => {
   const id = req.params.id as string;
-  const data = industrySchema.partial().parse(req.body);
+  const data = industryUpdateSchema.parse(req.body);
 
   const industry = await prisma.industry.update({
     where: { id },

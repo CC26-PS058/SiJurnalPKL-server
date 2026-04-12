@@ -119,12 +119,19 @@ async function main() {
         studentId: student.id,
         industryId: industry.id,
         startDate: new Date('2025-10-01'),
-        endDate: new Date('2026-03-31'),
+        endDate: new Date('2026-04-30'),
         status: 'ACTIVE',
       },
     });
     console.log(`✅ Placement Created: Student → PT. Clevio`);
   } else {
+    await prisma.placement.update({
+      where: { id: existingPlacement.id },
+      data: {
+        endDate: new Date('2026-04-30'),
+        status: 'ACTIVE',
+      },
+    });
     console.log(`✅ Placement Exists: Student → PT. Clevio`);
   }
   

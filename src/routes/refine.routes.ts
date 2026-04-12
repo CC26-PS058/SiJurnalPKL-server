@@ -10,6 +10,69 @@ router.use(authMiddleware, requireActivated);
 const N8N_REFINE_URL = process.env.N8N_REFINE_WEBHOOK_URL || '';
 const N8N_TITLE_URL = process.env.N8N_TITLE_WEBHOOK_URL || '';
 
+function parseObjectLike(value: unknown): Record<string, unknown> | null {
+  if (!value) return null;
+  if (typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  if (typeof value !== 'string') return null;
+
+  try {
+    const parsed = JSON.parse(value);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
+function toStringArray(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => (typeof item === 'string' ? item.trim() : ''))
+      .filter(Boolean);
+  }
+
+  if (typeof value === 'string') {
+    const parsed = parseObjectLike(value);
+    if (parsed) {
+      return toStringArray(parsed.skillTags ?? parsed.skill_tags ?? parsed.titles);
+    }
+
+    return value
+      .split(/\r?\n|[,;]+/)
+      .map((item) => item.replace(/^[-*\d.)\s]+/, '').trim())
+      .filter(Boolean);
+  }
+
+  return [];
+}
+
+function extractTitles(value: unknown): string[] {
+  const parsed = parseObjectLike(value);
+  if (parsed) {
+    return extractTitles(parsed.titles ?? parsed.result ?? parsed.text);
+  }
+
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => (typeof item === 'string' ? item.trim() : ''))
+      .filter(Boolean);
+  }
+
+  if (typeof value === 'string') {
+    return value
+      .split(/\r?\n+/)
+      .map((line) => line.replace(/^[-*\d.)\s]+/, '').trim())
+      .filter(Boolean);
+  }
+
+  return [];
+}
+
 // ============================================================
 // POST /api/refine — AI refine text + image via n8n
 // ============================================================
@@ -41,12 +104,37 @@ router.post('/', requireRole('STUDENT'), async (req: Request, res: Response) => 
     }
 
     const result = await n8nResponse.json();
+    const parsedResult =
+      parseObjectLike(result.result) ??
+      parseObjectLike(result.text) ??
+      parseObjectLike(result.output) ??
+      parseObjectLike(result);
+
+    const processedTextSource =
+      parsedResult?.processedText ??
+      parsedResult?.processed_text ??
+      result.processedText ??
+      result.processed_text ??
+      (typeof result.result === 'string' ? result.result : undefined) ??
+      (typeof result.text === 'string' ? result.text : undefined);
+
+    const processedText =
+      typeof processedTextSource === 'string' && processedTextSource.trim()
+        ? processedTextSource.trim()
+        : activityText;
+
+    const skillTags = toStringArray(
+      parsedResult?.skillTags ??
+      parsedResult?.skill_tags ??
+      result.skillTags ??
+      result.skill_tags
+    );
 
     res.json({
       success: true,
       data: {
-        processedText: result.processed_text || result.processedText || activityText,
-        skillTags: result.skill_tags || result.skillTags || [],
+        processedText,
+        skillTags,
       },
     });
   } catch (error) {
@@ -126,11 +214,12 @@ router.post('/title', requireRole('STUDENT'), async (req: Request, res: Response
     }
 
     const result = await n8nResponse.json();
+    const titles = extractTitles(result.titles ?? result.result ?? result.text ?? result);
 
     res.json({
       success: true,
       data: {
-        titles: result.titles || [],
+        titles,
       },
     });
   } catch (error) {

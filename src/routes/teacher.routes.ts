@@ -3,6 +3,7 @@ import prisma from '../configs/db.js';
 import { authMiddleware, requireRole, requireActivated } from '../middleware/auth.js';
 import { AppError } from '../middleware/errorHandler.js';
 import { generateId } from '../utils/nanoid.js';
+import { getJakartaWeekRange } from '../utils/date.js';
 
 const router = Router();
 router.use(authMiddleware, requireActivated, requireRole('TEACHER'));
@@ -78,13 +79,7 @@ router.get('/analytics', async (req: Request, res: Response) => {
 
   // Weekly attendance array construction
   const now = new Date();
-  const startOfWeek = new Date(now);
-  startOfWeek.setDate(now.getDate() - now.getDay() + 1); // Monday
-  startOfWeek.setHours(0, 0, 0, 0);
-
-  const endOfWeek = new Date(startOfWeek);
-  endOfWeek.setDate(startOfWeek.getDate() + 6);
-  endOfWeek.setHours(23, 59, 59, 999);
+  const { startDate: startOfWeek, endDate: endOfWeek } = getJakartaWeekRange(now);
 
   const logsThisWeek = await prisma.attendanceLog.findMany({
     where: {
@@ -109,9 +104,9 @@ router.get('/analytics', async (req: Request, res: Response) => {
     const dayName = daysOfWeek[log.workDate.getDay()];
     const index = initialWeekly.findIndex(w => w.day === dayName);
     if (index !== -1) {
-      if (log.statusAttendance === 'PRESENT') initialWeekly[index].hadir += 1;
+      if (log.statusAttendance === 'PRESENT' || log.statusAttendance === 'LATE') initialWeekly[index].hadir += 1;
       else if (log.statusAttendance === 'SICK' || log.statusAttendance === 'EXCUSED') initialWeekly[index].izinSakit += 1;
-      else if (log.statusAttendance === 'ABSENT') initialWeekly[index].alpha += 1;
+      else if (log.statusAttendance === 'ABSENT' || log.statusAttendance === 'ALPHA') initialWeekly[index].alpha += 1;
     }
   });
 
@@ -130,10 +125,10 @@ router.get('/analytics', async (req: Request, res: Response) => {
   };
 
   overallAttendance.forEach(a => {
-    if (a.statusAttendance === 'PRESENT') attendanceRatioMap['Hadir'] += a._count;
+    if (a.statusAttendance === 'PRESENT' || a.statusAttendance === 'LATE') attendanceRatioMap['Hadir'] += a._count;
     else if (a.statusAttendance === 'EXCUSED') attendanceRatioMap['Izin'] += a._count;
     else if (a.statusAttendance === 'SICK') attendanceRatioMap['Sakit'] += a._count;
-    else if (a.statusAttendance === 'ABSENT') attendanceRatioMap['Alpha'] += a._count;
+    else if (a.statusAttendance === 'ABSENT' || a.statusAttendance === 'ALPHA') attendanceRatioMap['Alpha'] += a._count;
   });
 
   // PKL Akan Selesai (next 30 days)
